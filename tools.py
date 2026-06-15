@@ -69,8 +69,43 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    # Load listings
+    listings = load_listings()
+
+    # Filter by price
+    if max_price is not None:
+        listings = [item for item in listings if item.get("price") is not None and item["price"] <= max_price]
+
+    # Filter by size
+    if size:
+        size_norm = size.lower()
+        def size_matches(item_size: str | None) -> bool:
+            if not item_size:
+                return False
+            return size_norm in item_size.lower()
+
+        listings = [item for item in listings if size_matches(item.get("size"))]
+
+    # Score by keyword overlap between query and title/description/style_tags
+    keywords = [k for k in description.lower().split() if k]
+
+    def score_item(item: dict) -> int:
+        text_parts = [item.get("title", ""), item.get("description", "")]
+        # include tags and category
+        text_parts.append(" ".join(item.get("style_tags", []) or []))
+        text_parts.append(item.get("category", ""))
+        text = " ".join(text_parts).lower()
+        return sum(1 for kw in keywords if kw in text)
+
+    scored = [(item, score_item(item)) for item in listings]
+    # drop zero scores
+    scored = [(item, s) for item, s in scored if s > 0]
+
+    # sort by score desc
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+
+    return [item for item, _ in scored]
+
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +135,59 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    client = _get_groq_client()
+
+    items = wardrobe.get("items", [])
+
+    # ── Case 1: Wardrobe empty ────────────────────────────────────────────────
+    if not items:
+        prompt = f"""
+        You are a fashion stylist.
+
+        The user thrifted this item:
+        {new_item}
+
+        Their wardrobe is empty.
+
+        Give 2–3 outfit ideas using general styling principles.
+        Be specific about colors, silhouettes, and vibes.
+        """
+
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8,
+        )
+
+        return response.choices[0].message.content
+
+    # ── Case 2: Wardrobe has items ────────────────────────────────────────────
+    wardrobe_text = "\n".join(
+        f"- {w['name']} ({w['category']}, {w['colors']})"
+        for w in items
+    )
+
+    prompt = f"""
+    You are a fashion stylist.
+
+    New thrifted item:
+    {new_item}
+
+    Wardrobe items:
+    {wardrobe_text}
+
+    Suggest 1–2 complete outfits using the new item and pieces from the wardrobe.
+    Be specific and creative.
+    """
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.8,
+    )
+
+    return response.choices[0].message.content
+
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +219,42 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # Guard against empty outfit
+    if not outfit or not outfit.strip():
+        return "I couldn't create a fit card because the outfit description was missing."
+
+    client = _get_groq_client()
+
+    # Extract item details
+    title = new_item.get("title", "this thrifted piece")
+    price = new_item.get("price", "unknown price")
+    platform = new_item.get("platform", "a thrift platform")
+
+    # Build prompt
+    prompt = f"""
+    Create a short, casual Instagram-style caption (2–4 sentences).
+
+    Details:
+    - Item: {title}
+    - Price: ${price}
+    - Platform: {platform}
+
+    Outfit:
+    {outfit}
+
+    Guidelines:
+    - Sound natural and conversational.
+    - Mention the item name, price, and platform once each.
+    - Capture the vibe of the outfit.
+    - Avoid sounding like an ad or product description.
+    """
+
+    # LLM call
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.9,
+    )
+
+    return response.choices[0].message.content
+
